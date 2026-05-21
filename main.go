@@ -54,7 +54,7 @@ func main() {
 
 			msg := tgbotapi.NewMessage(
 				update.Message.Chat.ID,
-				fmt.Sprintf("температура в %s:%d", update.Message.Text, math.Round(weather.Temp)))
+				fmt.Sprintf("температура в %s:%g", update.Message.Text, math.Round(weather.Temp)))
 			msg.ReplyToMessageID = update.Message.MessageID
 
 			bot.Send(msg)

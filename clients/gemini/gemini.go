@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/vlad000011/weatherbot/clients/openweather"
 	"google.golang.org/genai"
 )
 
@@ -13,7 +12,7 @@ type GeminiClient struct {
 	model  string
 }
 
-func NewClient(apiKey string, model string) (*GeminiClient, error) {
+func NewClient(apiKey string) (*GeminiClient, error) {
 	ctx := context.Background()
 
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
@@ -21,12 +20,12 @@ func NewClient(apiKey string, model string) (*GeminiClient, error) {
 		Backend: genai.BackendGeminiAPI,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("не удалось создать клиента: %w", err)
-
+		return nil, fmt.Errorf("не удалось создать клиента Gemini: %w", err)
 	}
+
 	return &GeminiClient{
 		client: client,
-		model:  "gemini-3.5-flash",
+		model:  "gemini-1.5-flash",
 	}, nil
 }
 func (c *GeminiClient) SuggestClothes(w openweather.Weather, city string) (string, error) {

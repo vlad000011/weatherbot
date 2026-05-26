@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/vlad000011/weatherbot/clients/weatherapi"
 	"google.golang.org/genai"
 )
 
@@ -25,47 +26,41 @@ func NewClient(apiKey string) (*GeminiClient, error) {
 
 	return &GeminiClient{
 		client: client,
-		model:  "gemini-1.5-flash",
+		model:  "gemini-3.5-flash",
 	}, nil
 }
-func (c *GeminiClient) SuggestClothes(w openweather.Weather, city string) (string, error) {
+
+func (c *GeminiClient) SuggestClothes(w weatherapi.Weather, city string) (string, error) {
 	ctx := context.Background()
-	prompt := fmt.Sprintf(`Ты — дружелюбный эксперт по выбору одежды.
+
+	prompt := fmt.Sprintf(`Ты — дружелюбный эксперт по одежде.
 Город: %s
 Температура: %.1f°C
 Ощущается как: %.1f°C
-`,
-		city,
-		w.Temp,
-		w.FeelsLike,
-	)
-	prompt += fmt.Sprintf(`Погода: %s
 Влажность: %d%%
 Ветер: %.1f м/с
 Описание: %s
 
-`,
-		w.MainWeather,
+Дай короткую рекомендацию, что надеть сегодня. Ответь на русском, 2-4 предложения.`,
+		city,
+		w.Temp,
+		w.FeelsLike,
 		w.Humidity,
 		w.WindSpeed,
 		w.Description,
 	)
-	prompt += `Дай короткую рекомендацию, что человеку лучше надеть сегодня. 
-Ответь на русском языке, в дружелюбном стиле, 2-4 предложения.`
-	parts := []*genai.Part{
-		{Text: prompt},
-	}
 
-	contents := []*genai.Content{
-		{Parts: parts},
-	}
+	parts := []*genai.Part{{Text: prompt}}
+	contents := []*genai.Content{{Parts: parts}}
 
 	resp, err := c.client.Models.GenerateContent(ctx, c.model, contents, nil)
 	if err != nil {
-		return "", fmt.Errorf("не удалось сгенерировать ответ: %w", err)
+		return "", fmt.Errorf("ошибка Gemini: %w", err)
 	}
+
 	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
-		return "", fmt.Errorf("gemini вернул пустой ответ")
+		return "", fmt.Errorf("пустой ответ")
 	}
+
 	return resp.Candidates[0].Content.Parts[0].Text, nil
 }

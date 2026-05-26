@@ -10,7 +10,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/vlad000011/weatherbot/clients/gemini"
-	"github.com/vlad000011/weatherbot/clients/openmeteo"
+	"github.com/vlad000011/weatherbot/clients/weatherapi"
 )
 
 func main() {
@@ -31,7 +31,7 @@ func main() {
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
 
-	meteoClient := openmeteo.NewClient()
+	weatherClient := weatherapi.NewClient(os.Getenv("WEATHERAPI_KEY"))
 
 	geminiKey := os.Getenv("GEMINI_API_KEY")
 	if geminiKey == "" {
@@ -55,11 +55,11 @@ func main() {
 			switch {
 			case strings.HasPrefix(data, "refresh:"):
 				city := strings.TrimPrefix(data, "refresh:")
-				handleWeatherRequest(bot, callback.Message.Chat.ID, city, meteoClient, geminiClient)
+				handleWeatherRequest(bot, callback.Message.Chat.ID, city, weatherClient, geminiClient)
 
 			case strings.HasPrefix(data, "newsuggestion:"):
 				city := strings.TrimPrefix(data, "newsuggestion:")
-				handleNewSuggestion(bot, callback.Message.Chat.ID, city, meteoClient, geminiClient)
+				handleNewSuggestion(bot, callback.Message.Chat.ID, city, weatherClient, geminiClient)
 			}
 			continue
 		}
@@ -68,36 +68,59 @@ func main() {
 			log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
 
 			if update.Message.Text == "/start" {
-				startMsg := tgbotapi.NewMessage(update.Message.Chat.ID, `👋 <b>Привет! Я — Weather Bot</b>
+				startMsg := tgbotapi.NewMessage(update.Message.Chat.ID,
+					`👋 <b>Привет! Я — Weather Bot</b>
 
-Просто напиши название города.`)
+Пиши название города на английском языке.
+Пример: Moscow, Tokyo, London, New York`)
 				startMsg.ParseMode = "HTML"
 				bot.Send(startMsg)
 				continue
 			}
 
-			handleWeatherRequest(bot, update.Message.Chat.ID, update.Message.Text, meteoClient, geminiClient)
+			handleWeatherRequest(bot, update.Message.Chat.ID, update.Message.Text, weatherClient, geminiClient)
 		}
 	}
 }
 
-// handleWeatherRequest — основная функция
-func handleWeatherRequest(bot *tgbotapi.BotAPI, chatID int64, city string, meteo *openmeteo.Client, gemini *gemini.GeminiClient) {
-	lat, lon, cityName, err := meteo.GetCoordinates(city)
+// Основная функция показа погоды
+func handleWeatherRequest(bot *tgbotapi.BotAPI, chatID int64, city string, wc *weatherapi.Client, gc *gemini.GeminiClient) {
+	city = strings.TrimSpace(city)
+	lowCity := strings.ToLower(city)
+
+	// Жёсткий фильтр бреда
+	if len(city) < 3 {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Слишком короткое название."))
+		return
+	}
+
+	badWords := []string{"piska", "dick", "cock", "penis", "fuck", "shit", "bitch", "cunt", "хуй", "пизд", "еб"}
+	for _, bad := range badWords {
+		if strings.Contains(lowCity, bad) {
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Некорректный запрос."))
+			return
+		}
+	}
+
+	weather, err := wc.GetWeather(city)
 	if err != nil {
-		msg := tgbotapi.NewMessage(chatID, "❌ Город не найден.")
+		msg := tgbotapi.NewMessage(chatID, "❌ Город не найден. Пиши правильное английское название.")
 		bot.Send(msg)
 		return
 	}
 
-	weather, err := meteo.GetWeather(lat, lon)
-	if err != nil {
-		msg := tgbotapi.NewMessage(chatID, "❌ Не удалось получить погоду")
+	// Улучшенная проверка совпадения
+	input := strings.ToLower(strings.ReplaceAll(city, "-", " "))
+	found := strings.ToLower(strings.ReplaceAll(weather.CityName, "-", " "))
+
+	if !strings.Contains(found, input) && !strings.Contains(input, found) {
+		msg := tgbotapi.NewMessage(chatID,
+			fmt.Sprintf("❌ Город «%s» не найден.\n\nAPI вернул: %s", city, weather.CityName))
 		bot.Send(msg)
 		return
 	}
-	weather.CityName = cityName
 
+	// === Выводим погоду ===
 	weatherText := fmt.Sprintf(`🌍 <b>Погода в %s</b>
 
 %s
@@ -120,19 +143,26 @@ func handleWeatherRequest(bot *tgbotapi.BotAPI, chatID int64, city string, meteo
 	msg.ParseMode = "HTML"
 	bot.Send(msg)
 
-	suggestion, err := gemini.SuggestClothes(weather, cityName)
+	// Gemini рекомендация
+	// Gemini рекомендация
+	suggestion, err := gc.SuggestClothes(weather, weather.CityName)
 	if err != nil {
-		log.Printf("Gemini error: %v", err)
+		log.Printf("=== GEMINI ERROR === City: %s | Error: %v", weather.CityName, err)
+		suggestionText := "👕 <b>Что надеть сегодня:</b>\n\nИзвини, сейчас не смог получить рекомендацию 😔"
+		suggestionMsg := tgbotapi.NewMessage(chatID, suggestionText)
+		suggestionMsg.ParseMode = "HTML"
+		bot.Send(suggestionMsg)
 	} else {
 		suggestionText := "👕 <b>Что надеть сегодня:</b>\n\n" + suggestion
 		suggestionMsg := tgbotapi.NewMessage(chatID, suggestionText)
 		suggestionMsg.ParseMode = "HTML"
 		sentMsg, _ := bot.Send(suggestionMsg)
 
+		// Кнопки
 		keyboard := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("🔄 Обновить", "refresh:"+cityName),
-				tgbotapi.NewInlineKeyboardButtonData("👕 Ещё совет", "newsuggestion:"+cityName),
+				tgbotapi.NewInlineKeyboardButtonData("🔄 Обновить", "refresh:"+weather.CityName),
+				tgbotapi.NewInlineKeyboardButtonData("👕 Ещё совет", "newsuggestion:"+weather.CityName),
 			),
 		)
 		editMsg := tgbotapi.NewEditMessageReplyMarkup(chatID, sentMsg.MessageID, keyboard)
@@ -140,43 +170,55 @@ func handleWeatherRequest(bot *tgbotapi.BotAPI, chatID int64, city string, meteo
 	}
 }
 
-func handleNewSuggestion(bot *tgbotapi.BotAPI, chatID int64, city string, meteo *openmeteo.Client, gemini *gemini.GeminiClient) {
+// Проверка наличия русских букв
+func containsRussianLetters(s string) bool {
+	for _, r := range s {
+		if r >= 'а' && r <= 'я' || r >= 'А' && r <= 'Я' {
+			return true
+		}
+	}
+	return false
+}
+
+// Проверка похожести городов
+func isSimilarCity(input, found string) bool {
+	input = strings.ToLower(strings.TrimSpace(input))
+	found = strings.ToLower(strings.TrimSpace(found))
+	return strings.Contains(found, input) || strings.Contains(input, found)
+}
+
+// handleNewSuggestion
+func handleNewSuggestion(bot *tgbotapi.BotAPI, chatID int64, city string, wc *weatherapi.Client, gc *gemini.GeminiClient) {
 	thinking := tgbotapi.NewMessage(chatID, "🤔 Думаю над новым советом...")
 	bot.Send(thinking)
 
-	lat, lon, cityName, err := meteo.GetCoordinates(city)
-	if err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Город не найден"))
-		return
-	}
-
-	weather, err := meteo.GetWeather(lat, lon)
+	weather, err := wc.GetWeather(city)
 	if err != nil {
 		bot.Send(tgbotapi.NewMessage(chatID, "❌ Не удалось получить погоду"))
 		return
 	}
-	weather.CityName = cityName
 
-	suggestion, err := gemini.SuggestClothes(weather, cityName)
+	suggestion, err := gc.SuggestClothes(weather, weather.CityName)
 	if err != nil {
 		bot.Send(tgbotapi.NewMessage(chatID, "❌ Gemini не ответил"))
 		return
 	}
 
-	suggestionText := "👕 <b>Новый совет:</b>\n\n" + suggestion
+	suggestionText := "👕 <b>Новый совет по одежде:</b>\n\n" + suggestion
 	suggestionMsg := tgbotapi.NewMessage(chatID, suggestionText)
 	suggestionMsg.ParseMode = "HTML"
 	bot.Send(suggestionMsg)
 }
 
 func getWeatherEmoji(desc string) string {
-	if strings.Contains(desc, "Ясно") {
+	desc = strings.ToLower(desc)
+	if strings.Contains(desc, "clear") || strings.Contains(desc, "sunny") {
 		return "☀️"
-	} else if strings.Contains(desc, "Облачно") || strings.Contains(desc, "Cloud") {
+	} else if strings.Contains(desc, "cloud") {
 		return "☁️"
-	} else if strings.Contains(desc, "Дождь") || strings.Contains(desc, "Rain") {
+	} else if strings.Contains(desc, "rain") {
 		return "🌧️"
-	} else if strings.Contains(desc, "Снег") {
+	} else if strings.Contains(desc, "snow") {
 		return "❄️"
 	}
 	return "🌤️"
